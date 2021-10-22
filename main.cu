@@ -1,8 +1,10 @@
 #include <iostream>
 #include <cuda_runtime.h>
 #include <chrono>
+#include <string>
 
 #define N 13
+//#define TRANSPOSED
 
 typedef std::chrono::high_resolution_clock Clock;
 
@@ -40,6 +42,7 @@ int32_t matrixBGlobal[N * N] = {
         77, 50, 108, 56, 106, 58, 121, 74, 70, 88, 19, 49, 83
 };
 
+int32_t matrixB_transposed[N * N];
 // Calculates AB + A + B
 //void naiveMatrixComputation() {
 //    int8_t c, d, k;
@@ -58,7 +61,7 @@ int32_t matrixBGlobal[N * N] = {
 
 // Calculates AB + A + B
 __global__ void
-gpuMatrixComputation(const int8_t *matrixA, const int8_t *matrixB, int32_t *matrixC) {
+gpuMatrixComputation(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC) {
     int8_t c, d, k;
     for (c = 0; c < N; ++c) {
         for (d = 0; d < N; ++d) {
@@ -72,22 +75,23 @@ gpuMatrixComputation(const int8_t *matrixA, const int8_t *matrixB, int32_t *matr
 }
 
 // Calculates AB + A + B
-
-/*Use :
- * TODO: lockIdx.y and threadIdx.y instead of loops
- * */
 __global__ void
-gpuParallelMatrixComputation(const int32_t *matrixA, const int32_t *matrixB, int32_t *matrixC, const int size) {
-    int8_t k;
-
-    matrixC[blockIdx.x * size + threadIdx.x] = 0;
-
-    for (k = 0; k < size; ++k) {
-          matrixC[blockIdx.x * size + threadIdx.x] += matrixA[blockIdx.x * size + k] * matrixB[k * size + threadIdx.x];
+gpuParallelMatrixComputation(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, const int size) {
+    int x = blockIdx.x;
+    int y = threadIdx.x;
+    
+    int sum = 0;
+    
+#pragma unroll
+    for (int k = 0; k < size; ++k) {
+#ifdef TRANSPOSED
+        sum += matrixA[x * size + k] * matrixB[y * size + k];
+#else
+        sum += matrixA[x * size + k] * matrixB[k * size + y];
+#endif
     }
-    matrixC[blockIdx.x * size + threadIdx.x] += matrixA[blockIdx.x * size + threadIdx.x] + matrixB[blockIdx.x * size + threadIdx.x];
-
-
+    sum += matrixA[x * size + y] + matrixB[x * size + y];
+    matrixC[x * size + y] = sum;
 }
 
 int main() {
@@ -96,12 +100,16 @@ int main() {
      */
 
     std::cout << "Malloc device mem" << std::endl;
+    for (int c = 0; c < N; ++c)
+        for (int d = 0; d < N; ++d)
+            matrixB_transposed[c * N + d] = matrixBGlobal[d * N + c];
 
-    int32_t *gpu_a, *gpu_b;
-    int32_t *gpu_c;
 
-    int32_t *c_out;
-    c_out = (int32_t *) malloc(N * N * sizeof(int32_t));
+    int32_t* gpu_a, * gpu_b;
+    int32_t* gpu_c;
+
+    int32_t* c_out;
+    c_out = (int32_t*)malloc(N * N * sizeof(int32_t));
 
     // We need variables accessible to the GPU,
     // so cudaMallocManaged provides these
@@ -121,23 +129,30 @@ int main() {
     if (cudaMemcpy(gpu_a, matrixAGlobal, (N * N * sizeof(int32_t)), cudaMemcpyHostToDevice) != 0) {
         std::cout << "memcpy failed" << std::endl;
     }
+
+#ifdef TRANSPOSED
+    if (cudaMemcpy(gpu_b, matrixB_transposed, (N * N * sizeof(int32_t)), cudaMemcpyHostToDevice) != 0) {
+        std::cout << "memcpy failed" << std::endl;
+    }
+#else
     if (cudaMemcpy(gpu_b, matrixBGlobal, (N * N * sizeof(int32_t)), cudaMemcpyHostToDevice) != 0) {
         std::cout << "memcpy failed" << std::endl;
     }
+#endif
 
     std::cout << "Computation" << std::endl;
 
     //Hier een goede keuze maken
-    dim3 threadsPerBlock = 13; //Should be a factor of 32
-    dim3 numBlocks = 13; // Very overkill but we now make use of all possible core
+    dim3 threadsPerBlock = 13;  // Should be a factor of 32
+    dim3 numBlocks = 13;        // Very overkill but we now make use of all possible core
 
     unsigned long time_taken = 0;
-    for (uint16_t i = 0; i < 1000; i++) {
+    for (uint16_t i = 0; i < 1e4; i++) {
         auto cpu_start = Clock::now();
         //88593
-        //gpuMatrixComputation<<<1, 1>>>(gpu_a, gpu_b, gpu_c);
+       // gpuMatrixComputation<<<1, 1>>>(gpu_a, gpu_b, gpu_c);
 
-        gpuParallelMatrixComputation<<<numBlocks, threadsPerBlock>>>(gpu_a, gpu_b, gpu_c, N);
+        gpuParallelMatrixComputation <<<numBlocks, threadsPerBlock >>> (gpu_a, gpu_b, gpu_c, N);
 
         cudaDeviceSynchronize();
         auto cpu_end = Clock::now();
@@ -159,7 +174,7 @@ int main() {
 
     for (c = 0; c < N; c++) {
         for (d = 0; d < N; d++) {
-            std::cout << std::to_string((int32_t) c_out[c * N + d]) + "\t";
+            std::cout << std::to_string((int32_t)c_out[c * N + d]) + "\t";
         }
         std::cout << "\n";
     }
