@@ -70,6 +70,7 @@ __global__ void matrixMul(const int* a, const int* b, int* c) {
     // Compute each thread's global row and column index
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
+    //printf("Dim: %d \n", blockIdx.x);
 
     // Statically allocated shared memory
     __shared__ int s_a[SHMEM_SIZE];
@@ -84,17 +85,20 @@ __global__ void matrixMul(const int* a, const int* b, int* c) {
         s_a[threadIdx.y * blockDim.x + threadIdx.x] = a[row * K + i + threadIdx.x];
         s_b[threadIdx.y * blockDim.x + threadIdx.x] = b[i * N + threadIdx.y * N + col];
 
-        // The C = A + B part
-        tmp += s_a[threadIdx.y * blockDim.x + threadIdx.x] + s_b[threadIdx.y * blockDim.x + threadIdx.x];
+        //printf("A: %d B: %d \n", row * K + i + threadIdx.x, i * N + threadIdx.y * N + col);
+        
 
         // Wait for both tiles to be loaded in before doing computation
         __syncthreads();
+
+        // The C = A + B part
+        tmp += s_a[threadIdx.y * blockDim.x + threadIdx.x] + s_b[threadIdx.y * blockDim.x + threadIdx.x];
 
         // Do matrix multiplication on the small matrix
         for (int j = 0; j < blockDim.x; j++) {
             tmp += s_a[threadIdx.y * blockDim.x + j] * s_b[j * blockDim.x + threadIdx.x];
         }
-        
+
         // Wait for all threads to finish using current tiles before loading in new
         // ones
         __syncthreads();
@@ -102,6 +106,41 @@ __global__ void matrixMul(const int* a, const int* b, int* c) {
 
     // Write back results
     if (row < M && col < N) c[row * N + col] = tmp;
+}
+
+// Calculates AB + A + B
+__global__ void
+gpuMatrixComputation(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC) {
+    int8_t c, d, k;
+    for (c = 0; c < N; ++c) {
+        for (d = 0; d < N; ++d) {
+            matrixC[c * N + d] = 0;
+            for (k = 0; k < N; ++k) {
+                matrixC[c * N + d] += matrixA[c * N + k] * matrixB[k * N + d];
+            }
+            matrixC[c * N + d] += matrixA[c * N + d] + matrixB[c * N + d];
+        }
+    }
+}
+
+// Calculates AB + A + B
+__global__ void
+gpuParallelMatrixComputation(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, const int size) {
+    int x = blockIdx.y * blockDim.y + threadIdx.y;
+    int y = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int sum = 0;
+
+#pragma unroll
+    for (int k = 0; k < size; ++k) {
+#ifdef TRANSPOSED
+        sum += matrixA[x * size + k] * matrixB[y * size + k];
+#else
+        sum += matrixA[x * size + k] * matrixB[k * size + y];
+#endif
+    }
+    sum += matrixA[x * size + y] + matrixB[x * size + y];
+    if (x < M && y < N) matrixC[x * size + y] = sum;
 }
 
 // Check result on the CPU
@@ -119,9 +158,11 @@ void verify_result(vector<int>& a, vector<int>& b, vector<int>& c) {
                 // Accumulate the partial results
                 tmp += a[row * K + i] * b[i * N + col];
             }
-
+            tmp += a[row * N + col] + b[row * N + col];
+            
             // Check against the CPU result
-            assert(tmp == c[row * N + col]);
+            // printf("tmp: %d c: %d\n", tmp, c[row * N + col]);
+           // assert(tmp == c[row * N + col]);
         }
     }
 }
@@ -166,6 +207,8 @@ int main() {
     int BLOCKS_X = N_padded / THREADS;
     int BLOCKS_Y = M_padded / THREADS;
 
+    printf("x: %d y: %d\n", BLOCKS_X, BLOCKS_Y);
+
     // Use dim3 structs for block  and grid dimensions
     dim3 threads(THREADS, THREADS);
     dim3 blocks(BLOCKS_X, BLOCKS_Y);
@@ -175,19 +218,26 @@ int main() {
         auto cpu_start = Clock::now();
 
         // Launch kernel
-        matrixMul << <blocks, threads >> > (d_a, d_b, d_c);
+        // Shared memory
+        matrixMul<<<blocks, threads>>>(d_a, d_b, d_c);
+
+        // Global memory
+        // gpuParallelMatrixComputation <<<blocks, threads >>> (d_a, d_b, d_c, N);
+
+        // Non-parallized
+        // gpuMatrixComputation <<<1, 1>>> (d_a, d_b, d_c);
 
         auto cpu_end = Clock::now();
 
         time_taken += std::chrono::duration_cast<std::chrono::nanoseconds>(cpu_end - cpu_start).count();
     }
-    
+
 
     // Copy back to the host
     cudaMemcpy(h_c.data(), d_c, bytes_c, cudaMemcpyDeviceToHost);
 
     // Check result
-    // verify_result(h_a, h_b, h_c);
+    verify_result(h_a, h_b, h_c);
 
     for (int c = 0; c < N; c++) {
         for (int d = 0; d < N; d++) {
