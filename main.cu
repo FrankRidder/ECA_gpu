@@ -85,7 +85,7 @@ __global__ void matrixMulShared(const int* a, const int* b, int* c) {
         s_a[threadIdx.y * blockDim.x + threadIdx.x] = a[row * K + i + threadIdx.x];
         s_b[threadIdx.y * blockDim.x + threadIdx.x] = b[i * N + threadIdx.y * N + col];
 
-        //printf("A: %d B: %d \n", row * K + i + threadIdx.x, i * N + threadIdx.y * N + col);
+        // printf("A: %d B: %d \n", row * K + i + threadIdx.x, i * N + threadIdx.y * N + col);
 
         // Wait for both tiles to be loaded in before doing computation
         __syncthreads();
@@ -110,10 +110,10 @@ __global__ void matrixMulShared(const int* a, const int* b, int* c) {
 // Calculates AB + A + B
 __global__ void
 matrixMulSum(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, const int size) {
-    // int x = blockIdx.x;
-    // int y = threadIdx.x;
-    int x = blockIdx.y * blockDim.y + threadIdx.y;
-    int y = blockIdx.x * blockDim.x + threadIdx.x;
+    int x = blockIdx.x;
+    int y = threadIdx.x;
+    // int x = blockIdx.y * blockDim.y + threadIdx.y;
+    // int y = blockIdx.x * blockDim.x + threadIdx.x;
 
     int sum = 0;
 
@@ -127,10 +127,10 @@ matrixMulSum(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, c
 // Calculates AB + A + B
 __global__ void
 matrixMulSumAndUnroll(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, const int size) {
-    // int x = blockIdx.x;
-    // int y = threadIdx.x;
-    int x = blockIdx.y * blockDim.y + threadIdx.y;
-    int y = blockIdx.x * blockDim.x + threadIdx.x;
+    int x = blockIdx.x;
+    int y = threadIdx.x;
+    // int x = blockIdx.y * blockDim.y + threadIdx.y;
+    // int y = blockIdx.x * blockDim.x + threadIdx.x;
 
     int sum = 0;
 #pragma unroll
@@ -144,35 +144,34 @@ matrixMulSumAndUnroll(const int32_t* matrixA, const int32_t* matrixB, int32_t* m
 // Calculates AB + A + B
 __global__ void
 matrixMulUnroll(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, const int size) {
-    // int x = blockIdx.x;
-    // int y = threadIdx.x;
-    int x = blockIdx.y * blockDim.y + threadIdx.y;
-    int y = blockIdx.x * blockDim.x + threadIdx.x;
+    int x = blockIdx.x;
+    int y = threadIdx.x;
+    // int x = blockIdx.y * blockDim.y + threadIdx.y;
+    // int y = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (x >= N || y >= N) return;
 
     matrixC[blockIdx.x * size + threadIdx.x] = 0;
 #pragma unroll
-    for (k = 0; k < size; ++k) {
+    for (int k = 0; k < size; ++k) {
         matrixC[blockIdx.x * size + threadIdx.x] += matrixA[blockIdx.x * size + k] * matrixB[k * size + threadIdx.x];
     }
     matrixC[blockIdx.x * size + threadIdx.x] += matrixA[blockIdx.x * size + threadIdx.x] + matrixB[blockIdx.x * size + threadIdx.x];
-    if (x < M && y < N) matrixC[x * size + y] = sum;
 }
 
 // Calculates AB + A + B
 __global__ void
 matrixMulFirst(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, const int size) {
-    // int x = blockIdx.x;
-    // int y = threadIdx.x;
-    int x = blockIdx.y * blockDim.y + threadIdx.y;
-    int y = blockIdx.x * blockDim.x + threadIdx.x;
+    int x = blockIdx.x;
+    int y = threadIdx.x;
+    //int x = blockIdx.y * blockDim.y + threadIdx.y;
+    //int y = blockIdx.x * blockDim.x + threadIdx.x;
 
     matrixC[blockIdx.x * size + threadIdx.x] = 0;
-#pragma unroll
-    for (k = 0; k < size; ++k) {
+    for (int k = 0; k < size; ++k) {
         matrixC[blockIdx.x * size + threadIdx.x] += matrixA[blockIdx.x * size + k] * matrixB[k * size + threadIdx.x];
     }
     matrixC[blockIdx.x * size + threadIdx.x] += matrixA[blockIdx.x * size + threadIdx.x] + matrixB[blockIdx.x * size + threadIdx.x];
-    if (x < M && y < N) matrixC[x * size + y] = sum;
 }
 
 
@@ -269,30 +268,30 @@ int main() {
 
         // Launch kernel
         // Shared memory
-        matrixMul<<<blocks, threads>>>(d_a, d_b, d_c);
+        matrixMulShared<<<blocks, threads>>>(d_a, d_b, d_c);
 
         // Global memory
-        // matrixMulFirst<<<blocks, threads >>> (d_a, d_b, d_c, N);
+        // matrixMulFirst<<<13, 13 >>> (d_a, d_b, d_c, N);
 
         // Sum variable
-        // matrixMulSum <<<blocks, threads >>>(d_a, d_b, d_c, N);
+        // matrixMulSum <<<13, 13>>>(d_a, d_b, d_c, N);
 
         // Unroll
-        // matrixMulUnroll<<<blocks, threads>>>(d_a, d_b, d_c, N);
+        // matrixMulUnroll<<<13, 13>>>(d_a, d_b, d_c, N);
 
         // Sum and unroll
-        // matrixMulSumAndUnroll<<<blocks, threads>>>(d_a, d_b, d_c, N);
+        // matrixMulSumAndUnroll<<<13, 13>>>(d_a, d_b, d_c, N);
 
         // Non-parallized
         // gpuMatrixComputation <<<1, 1>>> (d_a, d_b, d_c);
 
-        
 
+        cudaDeviceSynchronize();
         auto cpu_end = Clock::now();
 
         time_taken += std::chrono::duration_cast<std::chrono::nanoseconds>(cpu_end - cpu_start).count();
     }
-
+    
 
     // Copy back to the host
     cudaMemcpy(h_c.data(), d_c, bytes_c, cudaMemcpyDeviceToHost);
