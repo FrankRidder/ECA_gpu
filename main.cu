@@ -70,12 +70,14 @@ __global__ void matrixMulShared(const int* a, const int* b, int* c) {
     // Compute each thread's global row and column index
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
-    //printf("Dim: %d \n", blockIdx.x);
+
+    // Check bounds of matrix
+    if (row >= N || col >= N) return;
 
     // Statically allocated shared memory
     __shared__ int s_a[SHMEM_SIZE];
     __shared__ int s_b[SHMEM_SIZE];
-
+    
     // Accumulate in temporary variable
     int tmp = 0;
 
@@ -85,13 +87,11 @@ __global__ void matrixMulShared(const int* a, const int* b, int* c) {
         s_a[threadIdx.y * blockDim.x + threadIdx.x] = a[row * K + i + threadIdx.x];
         s_b[threadIdx.y * blockDim.x + threadIdx.x] = b[i * N + threadIdx.y * N + col];
 
-        // printf("A: %d B: %d \n", row * K + i + threadIdx.x, i * N + threadIdx.y * N + col);
+        // The matrix addition part
+        tmp += s_a[threadIdx.y * blockDim.x + threadIdx.x] + s_b[threadIdx.y * blockDim.x + threadIdx.x];
 
         // Wait for both tiles to be loaded in before doing computation
         __syncthreads();
-
-        // The C = A + B part
-        tmp += s_a[threadIdx.y * blockDim.x + threadIdx.x] + s_b[threadIdx.y * blockDim.x + threadIdx.x];
 
         // Do matrix multiplication on the small matrix
         for (int j = 0; j < blockDim.x; j++) {
@@ -104,7 +104,7 @@ __global__ void matrixMulShared(const int* a, const int* b, int* c) {
     }
 
     // Write back results
-    if (row < M && col < N) c[row * N + col] = tmp;
+    c[row * N + col] = tmp;
 }
 
 // Calculates AB + A + B
@@ -116,12 +116,11 @@ matrixMulSum(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, c
     // int y = blockIdx.x * blockDim.x + threadIdx.x;
 
     int sum = 0;
-
     for (int k = 0; k < size; ++k) {
         sum += matrixA[x * size + k] * matrixB[k * size + y];
     }
     sum += matrixA[x * size + y] + matrixB[x * size + y];
-    if (x < M && y < N) matrixC[x * size + y] = sum;
+    matrixC[x * size + y] = sum;
 }
 
 // Calculates AB + A + B
@@ -211,7 +210,7 @@ void verify_result(vector<int>& a, vector<int>& b, vector<int>& c) {
             
             // Check against the CPU result
             // printf("tmp: %d c: %d\n", tmp, c[row * N + col]);
-           // assert(tmp == c[row * N + col]);
+            assert(tmp == c[row * N + col]);
         }
     }
 }
@@ -263,7 +262,7 @@ int main() {
     dim3 blocks(BLOCKS_X, BLOCKS_Y);
 
     unsigned long time_taken = 0;
-    for (uint16_t i = 0; i < 1e3; i++) {
+    //for (uint16_t i = 0; i < 1e3; i++) {
         auto cpu_start = Clock::now();
 
         // Launch kernel
@@ -271,10 +270,10 @@ int main() {
         matrixMulShared<<<blocks, threads>>>(d_a, d_b, d_c);
 
         // Global memory
-        // matrixMulFirst<<<13, 13 >>> (d_a, d_b, d_c, N);
+       // matrixMulFirst<<<13, 13 >>> (d_a, d_b, d_c, N);
 
         // Sum variable
-        // matrixMulSum <<<13, 13>>>(d_a, d_b, d_c, N);
+        //matrixMulSum <<<13, 13>>>(d_a, d_b, d_c, N);
 
         // Unroll
         // matrixMulUnroll<<<13, 13>>>(d_a, d_b, d_c, N);
@@ -290,7 +289,7 @@ int main() {
         auto cpu_end = Clock::now();
 
         time_taken += std::chrono::duration_cast<std::chrono::nanoseconds>(cpu_end - cpu_start).count();
-    }
+    //}
     
 
     // Copy back to the host
