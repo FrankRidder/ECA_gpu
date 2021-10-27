@@ -66,7 +66,7 @@ constexpr int K_padded = K + THREADS - K % THREADS;
 // Size of shared memory per TB
 constexpr int SHMEM_SIZE = THREADS * THREADS;
 
-__global__ void matrixMul(const int* a, const int* b, int* c) {
+__global__ void matrixMulShared(const int* a, const int* b, int* c) {
     // Compute each thread's global row and column index
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -86,7 +86,6 @@ __global__ void matrixMul(const int* a, const int* b, int* c) {
         s_b[threadIdx.y * blockDim.x + threadIdx.x] = b[i * N + threadIdx.y * N + col];
 
         //printf("A: %d B: %d \n", row * K + i + threadIdx.x, i * N + threadIdx.y * N + col);
-        
 
         // Wait for both tiles to be loaded in before doing computation
         __syncthreads();
@@ -110,6 +109,75 @@ __global__ void matrixMul(const int* a, const int* b, int* c) {
 
 // Calculates AB + A + B
 __global__ void
+matrixMulSum(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, const int size) {
+    // int x = blockIdx.x;
+    // int y = threadIdx.x;
+    int x = blockIdx.y * blockDim.y + threadIdx.y;
+    int y = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int sum = 0;
+
+    for (int k = 0; k < size; ++k) {
+        sum += matrixA[x * size + k] * matrixB[k * size + y];
+    }
+    sum += matrixA[x * size + y] + matrixB[x * size + y];
+    if (x < M && y < N) matrixC[x * size + y] = sum;
+}
+
+// Calculates AB + A + B
+__global__ void
+matrixMulSumAndUnroll(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, const int size) {
+    // int x = blockIdx.x;
+    // int y = threadIdx.x;
+    int x = blockIdx.y * blockDim.y + threadIdx.y;
+    int y = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int sum = 0;
+#pragma unroll
+    for (int k = 0; k < size; ++k) {
+        sum += matrixA[x * size + k] * matrixB[k * size + y];
+    }
+    sum += matrixA[x * size + y] + matrixB[x * size + y];
+    if (x < M && y < N) matrixC[x * size + y] = sum;
+}
+
+// Calculates AB + A + B
+__global__ void
+matrixMulUnroll(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, const int size) {
+    // int x = blockIdx.x;
+    // int y = threadIdx.x;
+    int x = blockIdx.y * blockDim.y + threadIdx.y;
+    int y = blockIdx.x * blockDim.x + threadIdx.x;
+
+    matrixC[blockIdx.x * size + threadIdx.x] = 0;
+#pragma unroll
+    for (k = 0; k < size; ++k) {
+        matrixC[blockIdx.x * size + threadIdx.x] += matrixA[blockIdx.x * size + k] * matrixB[k * size + threadIdx.x];
+    }
+    matrixC[blockIdx.x * size + threadIdx.x] += matrixA[blockIdx.x * size + threadIdx.x] + matrixB[blockIdx.x * size + threadIdx.x];
+    if (x < M && y < N) matrixC[x * size + y] = sum;
+}
+
+// Calculates AB + A + B
+__global__ void
+matrixMulFirst(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, const int size) {
+    // int x = blockIdx.x;
+    // int y = threadIdx.x;
+    int x = blockIdx.y * blockDim.y + threadIdx.y;
+    int y = blockIdx.x * blockDim.x + threadIdx.x;
+
+    matrixC[blockIdx.x * size + threadIdx.x] = 0;
+#pragma unroll
+    for (k = 0; k < size; ++k) {
+        matrixC[blockIdx.x * size + threadIdx.x] += matrixA[blockIdx.x * size + k] * matrixB[k * size + threadIdx.x];
+    }
+    matrixC[blockIdx.x * size + threadIdx.x] += matrixA[blockIdx.x * size + threadIdx.x] + matrixB[blockIdx.x * size + threadIdx.x];
+    if (x < M && y < N) matrixC[x * size + y] = sum;
+}
+
+
+// Calculates AB + A + B
+__global__ void
 gpuMatrixComputation(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC) {
     int8_t c, d, k;
     for (c = 0; c < N; ++c) {
@@ -123,25 +191,7 @@ gpuMatrixComputation(const int32_t* matrixA, const int32_t* matrixB, int32_t* ma
     }
 }
 
-// Calculates AB + A + B
-__global__ void
-gpuParallelMatrixComputation(const int32_t* matrixA, const int32_t* matrixB, int32_t* matrixC, const int size) {
-    int x = blockIdx.y * blockDim.y + threadIdx.y;
-    int y = blockIdx.x * blockDim.x + threadIdx.x;
 
-    int sum = 0;
-
-#pragma unroll
-    for (int k = 0; k < size; ++k) {
-#ifdef TRANSPOSED
-        sum += matrixA[x * size + k] * matrixB[y * size + k];
-#else
-        sum += matrixA[x * size + k] * matrixB[k * size + y];
-#endif
-    }
-    sum += matrixA[x * size + y] + matrixB[x * size + y];
-    if (x < M && y < N) matrixC[x * size + y] = sum;
-}
 
 // Check result on the CPU
 // MxN = MxK * KxN
@@ -222,10 +272,21 @@ int main() {
         matrixMul<<<blocks, threads>>>(d_a, d_b, d_c);
 
         // Global memory
-        // gpuParallelMatrixComputation <<<blocks, threads >>> (d_a, d_b, d_c, N);
+        // matrixMulFirst<<<blocks, threads >>> (d_a, d_b, d_c, N);
+
+        // Sum variable
+        // matrixMulSum <<<blocks, threads >>>(d_a, d_b, d_c, N);
+
+        // Unroll
+        // matrixMulUnroll<<<blocks, threads>>>(d_a, d_b, d_c, N);
+
+        // Sum and unroll
+        // matrixMulSumAndUnroll<<<blocks, threads>>>(d_a, d_b, d_c, N);
 
         // Non-parallized
         // gpuMatrixComputation <<<1, 1>>> (d_a, d_b, d_c);
+
+        
 
         auto cpu_end = Clock::now();
 
